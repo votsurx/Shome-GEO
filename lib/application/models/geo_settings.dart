@@ -1,9 +1,8 @@
 class GeoSettings {
+  final String shomeHost;
   final String phoneId;
   final String phoneName;
   final String homeSsid;
-  final String localMqttHost;
-  final int localMqttPort;
   final String cloudMqttHost;
   final int cloudMqttPort;
   final String cloudMqttUser;
@@ -14,11 +13,10 @@ class GeoSettings {
   final bool enabled;
 
   GeoSettings({
+    this.shomeHost = '192.168.1.100',
     this.phoneId = '',
     this.phoneName = '',
     this.homeSsid = '',
-    this.localMqttHost = '192.168.1.100',
-    this.localMqttPort = 1883,
     this.cloudMqttHost = '',
     this.cloudMqttPort = 8883,
     this.cloudMqttUser = '',
@@ -32,11 +30,10 @@ class GeoSettings {
   bool get isConfigured => phoneId.isNotEmpty;
 
   GeoSettings copyWith({
+    String? shomeHost,
     String? phoneId,
     String? phoneName,
     String? homeSsid,
-    String? localMqttHost,
-    int? localMqttPort,
     String? cloudMqttHost,
     int? cloudMqttPort,
     String? cloudMqttUser,
@@ -47,11 +44,10 @@ class GeoSettings {
     bool? enabled,
   }) {
     return GeoSettings(
+      shomeHost: shomeHost ?? this.shomeHost,
       phoneId: phoneId ?? this.phoneId,
       phoneName: phoneName ?? this.phoneName,
       homeSsid: homeSsid ?? this.homeSsid,
-      localMqttHost: localMqttHost ?? this.localMqttHost,
-      localMqttPort: localMqttPort ?? this.localMqttPort,
       cloudMqttHost: cloudMqttHost ?? this.cloudMqttHost,
       cloudMqttPort: cloudMqttPort ?? this.cloudMqttPort,
       cloudMqttUser: cloudMqttUser ?? this.cloudMqttUser,

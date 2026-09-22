@@ -17,10 +17,9 @@ class GeoSettingsNotifier extends Notifier<GeoSettings> {
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
     state = GeoSettings(
+      shomeHost: prefs.getString('shome_host') ?? '192.168.1.100',
       phoneId: prefs.getString('phone_id') ?? '',
       phoneName: prefs.getString('phone_name') ?? '',
-      localMqttHost: prefs.getString('local_mqtt_host') ?? '192.168.1.100',
-      localMqttPort: prefs.getInt('local_mqtt_port') ?? 1883,
       cloudMqttHost: prefs.getString('cloud_mqtt_host') ?? '',
       cloudMqttPort: prefs.getInt('cloud_mqtt_port') ?? 8883,
       cloudMqttUser: prefs.getString('cloud_mqtt_user') ?? '',
@@ -35,10 +34,9 @@ class GeoSettingsNotifier extends Notifier<GeoSettings> {
   Future<void> update(GeoSettings settings) async {
     state = settings;
     final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('shome_host', settings.shomeHost);
     await prefs.setString('phone_id', settings.phoneId);
     await prefs.setString('phone_name', settings.phoneName);
-    await prefs.setString('local_mqtt_host', settings.localMqttHost);
-    await prefs.setInt('local_mqtt_port', settings.localMqttPort);
     await prefs.setString('cloud_mqtt_host', settings.cloudMqttHost);
     await prefs.setInt('cloud_mqtt_port', settings.cloudMqttPort);
     await prefs.setString('cloud_mqtt_user', settings.cloudMqttUser);

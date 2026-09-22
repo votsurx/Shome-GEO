@@ -22,10 +22,11 @@ class PresenceTaskHandler extends TaskHandler {
 
   @override
   Future<void> onRepeatEvent(DateTime timestamp) async {
-    debugPrint('⏰ onRepeatEvent: $timestamp');
+    debugPrint('⏰ onRepeatEvent');
 
     try {
       final prefs = await SharedPreferences.getInstance();
+      final shomeHost = prefs.getString('shome_host') ?? '192.168.1.100';
       final phoneId = prefs.getString('phone_id') ?? '';
       final mailruLogin = prefs.getString('mailru_login') ?? '';
       final mailruPassword = prefs.getString('mailru_password') ?? '';
@@ -35,56 +36,83 @@ class PresenceTaskHandler extends TaskHandler {
         return;
       }
 
-      if (mailruLogin.isEmpty || mailruPassword.isEmpty) {
-        debugPrint('⚠️ Mail.ru логин/пароль не заданы');
+      // 1. Пингуем Shome
+      final isHome = await _pingHost(shomeHost);
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      if (isHome) {
+        // Дома — обновляем timestamp
+        await prefs.setInt('last_home_ts', now);
+        debugPrint('📍 Дома — GPS не нужен');
         return;
       }
 
-      // GPS
+      // 2. Пинг провалился — проверяем, сколько прошло
+      final lastHomeTs = prefs.getInt('last_home_ts') ?? 0;
+      final minutesSinceHome = lastHomeTs == 0
+          ? 999
+          : (now - lastHomeTs) ~/ 60000;
+
+      debugPrint('⏳ Нет пинга уже $minutesSinceHome мин');
+
+      if (minutesSinceHome < 3) {
+        debugPrint('⏳ Ждём (меньше 3 мин)');
+        return;
+      }
+
+      // 3. Точно ушёл — отправляем GPS
+      debugPrint('🚶 Вне дома → отправляем GPS');
+
       final pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 30),
+        timeLimit: const Duration(seconds: 60),
       );
 
       debugPrint('📍 GPS: ${pos.latitude}, ${pos.longitude}');
 
       // Mail.ru
-      await MailruService.connect(
-        login: mailruLogin,
-        password: mailruPassword,
-      );
+      if (mailruLogin.isNotEmpty && mailruPassword.isNotEmpty) {
+        await MailruService.connect(
+          login: mailruLogin,
+          password: mailruPassword,
+        );
 
-      final now = DateTime.now().millisecondsSinceEpoch;
-      final data = {
-        'lat': pos.latitude,
-        'lng': pos.longitude,
-        'accuracy': pos.accuracy,
-        'battery': 0,
-        'ts': now,
-      };
+        final data = {
+          'lat': pos.latitude,
+          'lng': pos.longitude,
+          'accuracy': pos.accuracy,
+          'battery': 0,
+          'ts': now,
+        };
 
-      final path = 'SHome/presence/$phoneId.json';
-      final success = await MailruService.uploadFile(path, jsonEncode(data));
+        final path = 'SHome/presence/$phoneId.json';
+        final success = await MailruService.uploadFile(path, jsonEncode(data));
 
-      if (success) {
-        await prefs.setInt('last_gps_sent', now);
-
-        // Дублируем в файл
-        try {
-          final dir = await getApplicationDocumentsDirectory();
-          final file = File('${dir.path}/last_gps_sent.txt');
-          await file.writeAsString(now.toString());
-          debugPrint('📝 last_gps_sent в файл: $now');
-        } catch (e) {
-          debugPrint('❌ Ошибка записи файла: $e');
+        if (success) {
+          await prefs.setInt('last_gps_sent', now);
+          try {
+            final dir = await getApplicationDocumentsDirectory();
+            final file = File('${dir.path}/last_gps_sent.txt');
+            await file.writeAsString(now.toString());
+          } catch (_) {}
+          debugPrint('✅ Отправлено через Mail.ru');
         }
-
-        debugPrint('✅ Отправлено через Mail.ru');
-      } else {
-        debugPrint('❌ Ошибка отправки');
       }
     } catch (e) {
-      debugPrint('❌ Ошибка в onRepeatEvent: $e');
+      debugPrint('❌ Ошибка: $e');
+    }
+  }
+
+  Future<bool> _pingHost(String host) async {
+    try {
+      final result = await Process.run(
+        'ping',
+        ['-c', '1', '-W', '2', host],
+      );
+      return result.exitCode == 0;
+    } catch (e) {
+      debugPrint('❌ Ошибка ping: $e');
+      return false;
     }
   }
 

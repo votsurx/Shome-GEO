@@ -57,11 +57,13 @@ class SettingsScreen extends ConsumerWidget {
           // ─── Локальный MQTT ───
           _buildCard(
             context: context,
-            icon: Icons.wifi,
-            color: Colors.green,
-            title: 'MQTT (локальный)',
-            subtitle: '${settings.localMqttHost}:${settings.localMqttPort}',
-            onTap: () => _showLocalMqttDialog(context, ref, settings),
+            icon: Icons.router,
+            color: Colors.cyan,
+            title: 'Shome (планшет)',
+            subtitle: settings.shomeHost.isEmpty
+                ? 'Не настроено'
+                : settings.shomeHost,
+            onTap: () => _showShomeHostDialog(context, ref, settings),
           ),
 
           // ─── Облачный MQTT ───
@@ -218,36 +220,21 @@ class SettingsScreen extends ConsumerWidget {
     );
   }
 
-  void _showLocalMqttDialog(
+  void _showShomeHostDialog(
       BuildContext context, WidgetRef ref, GeoSettings settings) {
-    final hostCtrl = TextEditingController(text: settings.localMqttHost);
-    final portCtrl =
-    TextEditingController(text: settings.localMqttPort.toString());
+    final ctrl = TextEditingController(text: settings.shomeHost);
 
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Локальный MQTT'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: hostCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Host',
-                hintText: '192.168.1.100',
-              ),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: portCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Port',
-                hintText: '1883',
-              ),
-              keyboardType: TextInputType.number,
-            ),
-          ],
+        title: const Text('Shome (планшет)'),
+        content: TextField(
+          controller: ctrl,
+          decoration: const InputDecoration(
+            labelText: 'IP адрес',
+            hintText: '192.168.1.100',
+          ),
+          keyboardType: TextInputType.number,
         ),
         actions: [
           TextButton(
@@ -257,10 +244,7 @@ class SettingsScreen extends ConsumerWidget {
           ElevatedButton(
             onPressed: () {
               ref.read(geoSettingsProvider.notifier).update(
-                settings.copyWith(
-                  localMqttHost: hostCtrl.text.trim(),
-                  localMqttPort: int.tryParse(portCtrl.text) ?? 1883,
-                ),
+                settings.copyWith(shomeHost: ctrl.text.trim()),
               );
               Navigator.pop(ctx);
             },
@@ -270,6 +254,7 @@ class SettingsScreen extends ConsumerWidget {
       ),
     );
   }
+
 
   void _showCloudMqttDialog(
       BuildContext context, WidgetRef ref, GeoSettings settings) {
