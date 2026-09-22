@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../application/models/geo_settings.dart';
 import '../../application/state/geo_settings_provider.dart';
+import '../../data/services/foreground_service.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -347,32 +348,68 @@ class SettingsScreen extends ConsumerWidget {
 
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Интервал отправки'),
-        content: TextField(
-          controller: ctrl,
-          decoration: const InputDecoration(
-            labelText: 'Секунды',
-            hintText: '30',
-          ),
-          keyboardType: TextInputType.number,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Отмена'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              final interval = int.tryParse(ctrl.text) ?? 30;
-              ref.read(geoSettingsProvider.notifier).update(
-                settings.copyWith(updateIntervalSec: interval),
-              );
-              Navigator.pop(ctx);
-            },
-            child: const Text('Сохранить'),
-          ),
-        ],
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final interval = int.tryParse(ctrl.text) ?? 0;
+          final isValid = interval >= 60;
+
+          return AlertDialog(
+            title: const Text('Интервал отправки'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: ctrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Секунды',
+                    hintText: '60',
+                    helperText: 'Минимум 60 секунд',
+                  ),
+                  keyboardType: TextInputType.number,
+                  onChanged: (val) {
+                    setDialogState(() {});
+                  },
+                ),
+                if (!isValid && ctrl.text.isNotEmpty)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 8),
+                    child: Text(
+                      '⚠️ Минимум 60 секунд',
+                      style: TextStyle(color: Colors.red, fontSize: 12),
+                    ),
+                  ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Отмена'),
+              ),
+              ElevatedButton(
+                onPressed: !isValid
+                    ? null
+                    : () async {
+                  // Сохраняем настройки
+                  await ref.read(geoSettingsProvider.notifier).update(
+                    settings.copyWith(updateIntervalSec: interval),
+                  );
+
+                  // Перезапускаем сервис, если он запущен
+                  if (await ForegroundServiceManager.isRunning()) {
+                    debugPrint('🔄 Перезапуск сервиса');
+                    await ForegroundServiceManager.restart(
+                      intervalMs: interval * 1000,
+                    );
+                  }
+
+                  if (!context.mounted) return;
+                  Navigator.pop(ctx);
+                },
+                child: const Text('Сохранить'),
+              ),
+            ],
+          );
+        },
       ),
     );
   }

@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'mailru_service.dart';
 
@@ -15,37 +17,15 @@ void startCallback() {
 class PresenceTaskHandler extends TaskHandler {
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    debugPrint('🚀 Foreground service started');
+    debugPrint('🚀 onStart: $timestamp');
   }
 
   @override
   Future<void> onRepeatEvent(DateTime timestamp) async {
+    debugPrint('⏰ onRepeatEvent: $timestamp');
+
     try {
       final prefs = await SharedPreferences.getInstance();
-
-      // Читаем интервал из настроек (в секундах)
-      final intervalSec = prefs.getInt('update_interval') ?? 30;
-      final lastSent = prefs.getInt('last_gps_sent') ?? 0;
-      final now = DateTime.now().millisecondsSinceEpoch;
-
-      // Проверяем, прошло ли достаточно времени
-      if (now - lastSent < intervalSec * 1000) {
-        debugPrint(
-            '⏳ Ещё рано: прошло ${(now - lastSent) ~/ 1000} сек, нужно $intervalSec сек');
-        return;
-      }
-
-      debugPrint('⏰ Пора отправлять');
-
-      // 1. Получаем GPS
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 30),
-      );
-
-      debugPrint('📍 GPS: ${pos.latitude}, ${pos.longitude}');
-
-      // 2. Получаем настройки
       final phoneId = prefs.getString('phone_id') ?? '';
       final mailruLogin = prefs.getString('mailru_login') ?? '';
       final mailruPassword = prefs.getString('mailru_password') ?? '';
@@ -60,13 +40,21 @@ class PresenceTaskHandler extends TaskHandler {
         return;
       }
 
-      // 3. Подключаемся к Mail.ru
+      // GPS
+      final pos = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+        timeLimit: const Duration(seconds: 30),
+      );
+
+      debugPrint('📍 GPS: ${pos.latitude}, ${pos.longitude}');
+
+      // Mail.ru
       await MailruService.connect(
         login: mailruLogin,
         password: mailruPassword,
       );
 
-      // 4. Отправляем координаты
+      final now = DateTime.now().millisecondsSinceEpoch;
       final data = {
         'lat': pos.latitude,
         'lng': pos.longitude,
@@ -79,10 +67,18 @@ class PresenceTaskHandler extends TaskHandler {
       final success = await MailruService.uploadFile(path, jsonEncode(data));
 
       if (success) {
-        // 5. Пишем статус
         await prefs.setInt('last_gps_sent', now);
-        await prefs.setDouble('last_lat', pos.latitude);
-        await prefs.setDouble('last_lng', pos.longitude);
+
+        // Дублируем в файл
+        try {
+          final dir = await getApplicationDocumentsDirectory();
+          final file = File('${dir.path}/last_gps_sent.txt');
+          await file.writeAsString(now.toString());
+          debugPrint('📝 last_gps_sent в файл: $now');
+        } catch (e) {
+          debugPrint('❌ Ошибка записи файла: $e');
+        }
+
         debugPrint('✅ Отправлено через Mail.ru');
       } else {
         debugPrint('❌ Ошибка отправки');
@@ -111,8 +107,12 @@ class PresenceTaskHandler extends TaskHandler {
 
 /// Менеджер foreground service.
 class ForegroundServiceManager {
+  static int _intervalMs = 60000;
+
   /// Инициализация (вызывать в main()).
-  static Future<void> init() async {
+  static Future<void> init({int intervalMs = 60000}) async {
+    _intervalMs = intervalMs < 60000 ? 60000 : intervalMs;
+
     FlutterForegroundTask.init(
       androidNotificationOptions: AndroidNotificationOptions(
         channelId: 'shome_geo_service',
@@ -126,18 +126,19 @@ class ForegroundServiceManager {
         playSound: false,
       ),
       foregroundTaskOptions: ForegroundTaskOptions(
-        eventAction: ForegroundTaskEventAction.repeat(120000), // 2 минуты
+        eventAction: ForegroundTaskEventAction.repeat(_intervalMs),
         autoRunOnBoot: true,
         autoRunOnMyPackageReplaced: true,
         allowWakeLock: true,
         allowWifiLock: true,
       ),
     );
+
+    debugPrint('🔧 ForegroundServiceManager.init: interval=$_intervalMs мс');
   }
 
   /// Запуск сервиса.
   static Future<bool> start() async {
-    // Запрашиваем разрешение на уведомления
     final permission =
     await FlutterForegroundTask.checkNotificationPermission();
     if (permission != NotificationPermission.granted) {
@@ -151,7 +152,8 @@ class ForegroundServiceManager {
 
     await FlutterForegroundTask.startService(
       notificationTitle: 'SHome-GEO активно',
-      notificationText: 'Отправка координат',
+      notificationText:
+      'Отправка координат. Остановить — в приложении',
       callback: startCallback,
       serviceTypes: [ForegroundServiceTypes.location],
     );
@@ -164,6 +166,14 @@ class ForegroundServiceManager {
   static Future<void> stop() async {
     await FlutterForegroundTask.stopService();
     debugPrint('⏹ Сервис остановлен');
+  }
+
+  /// Перезапуск сервиса с новым интервалом.
+  static Future<void> restart({required int intervalMs}) async {
+    debugPrint('🔄 Перезапуск сервиса с интервалом $intervalMs мс');
+    await stop();
+    await init(intervalMs: intervalMs);
+    await start();
   }
 
   /// Проверка, запущен ли сервис.
