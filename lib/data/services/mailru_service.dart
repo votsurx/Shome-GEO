@@ -4,39 +4,59 @@ import 'package:webdav_client/webdav_client.dart' as webdav;
 
 class MailruService {
   static webdav.Client? _client;
-  static String? _baseUrl;
+  static String? _currentLogin;
 
-  /// Подключение к Mail.ru Cloud через WebDAV
+  /// Умное подключение: если уже подключены с тем же логином — переиспользуем.
+  /// Если логин изменился или клиента нет — подключаемся заново.
+  static Future<bool> ensureConnected({
+    required String login,
+    required String password,
+  }) async {
+    // Уже подключены с тем же логином — переиспользуем
+    if (_client != null && _currentLogin == login) {
+      return true;
+    }
+
+    // Логин изменился или клиента нет — сбрасываем и подключаемся
+    _client = null;
+    _currentLogin = null;
+
+    return await connect(login: login, password: password);
+  }
+
+  /// Подключение к Mail.ru Cloud через WebDAV.
   static Future<bool> connect({
     required String login,
     required String password,
   }) async {
     try {
-      _baseUrl = 'https://webdav.cloud.mail.ru';
-      _client = webdav.newClient(_baseUrl!, user: login, password: password);
+      _client = webdav.newClient(
+        'https://webdav.cloud.mail.ru',
+        user: login,
+        password: password,
+      );
       _client!.setConnectTimeout(10000);
       _client!.setSendTimeout(10000);
       _client!.setReceiveTimeout(10000);
 
       await _client!.ping();
 
-      // Создаём папки
-      try {
-        await _client!.mkdir('/SHome');
-      } catch (_) {}
-      try {
-        await _client!.mkdir('/SHome/presence');
-      } catch (_) {}
+      // Создаём папки (игнорируем ошибки "уже существует")
+      try { await _client!.mkdir('/SHome'); } catch (_) {}
+      try { await _client!.mkdir('/SHome/presence'); } catch (_) {}
 
-      debugPrint('✅ Mail.ru Cloud подключён');
+      _currentLogin = login;
+      debugPrint('✅ Mail.ru Cloud подключён: $login');
       return true;
     } catch (e) {
       debugPrint('❌ Ошибка Mail.ru: $e');
+      _client = null;
+      _currentLogin = null;
       return false;
     }
   }
 
-  /// Загрузить файл
+  /// Загрузить файл.
   static Future<bool> uploadFile(String path, String content) async {
     if (_client == null) return false;
     try {
@@ -64,7 +84,7 @@ class MailruService {
     }
   }
 
-  /// Скачать файл
+  /// Скачать файл.
   static Future<String?> downloadFile(String path) async {
     if (_client == null) return null;
     try {
@@ -77,7 +97,7 @@ class MailruService {
     }
   }
 
-  /// Удалить файл
+  /// Удалить файл.
   static Future<bool> deleteFile(String path) async {
     if (_client == null) return false;
     try {
@@ -89,7 +109,7 @@ class MailruService {
     }
   }
 
-  /// Создать папку
+  /// Создать папку.
   static Future<bool> createFolder(String path) async {
     if (_client == null) return false;
     try {
@@ -101,6 +121,12 @@ class MailruService {
     }
   }
 
-  /// Проверить подключение
+  /// Проверить подключение.
   static bool get isConnected => _client != null;
+
+  /// Отключиться (сбросить клиент).
+  static void disconnect() {
+    _client = null;
+    _currentLogin = null;
+  }
 }

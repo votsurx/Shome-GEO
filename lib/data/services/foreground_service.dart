@@ -1,10 +1,9 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'heartbeat_client.dart';
 import 'mailru_service.dart';
 
 /// Точка входа для фонового сервиса.
@@ -15,74 +14,105 @@ void startCallback() {
 
 /// Обработчик фоновых задач.
 class PresenceTaskHandler extends TaskHandler {
+  int _consecutiveFails = 0;
+  HeartbeatClient? _client;
+
   @override
   Future<void> onStart(DateTime timestamp, TaskStarter starter) async {
-    debugPrint('🚀 onStart: $timestamp');
+    final prefs = await SharedPreferences.getInstance();
+    _client = HeartbeatClient(
+      shomeHost: prefs.getString('shome_host') ?? '192.168.1.100',
+      phoneId: prefs.getString('phone_id') ?? '',
+      phoneName: prefs.getString('phone_name') ?? 'Телефон',
+    );
+    debugPrint('🚀 PresenceTaskHandler запущен');
   }
 
   @override
   Future<void> onRepeatEvent(DateTime timestamp) async {
-    debugPrint('⏰ onRepeatEvent');
-
     try {
       final prefs = await SharedPreferences.getInstance();
-      final shomeHost = prefs.getString('shome_host') ?? '192.168.1.100';
-      final phoneId = prefs.getString('phone_id') ?? '';
+      final battery = await _getBattery();
+
+      // 1. Отправляем heartbeat в SHome
+      final ok = await _client!.sendHeartbeat(battery: battery);
+
+      if (ok) {
+        // ДОМА — сбрасываем счётчик, ничего в облако не пишем
+        _consecutiveFails = 0;
+        await prefs.setInt(
+          'last_home_ts',
+          DateTime.now().millisecondsSinceEpoch,
+        );
+        await prefs.setBool('is_via_wifi', true);
+
+        FlutterForegroundTask.sendDataToMain({
+          'event': 'heartbeat_ok',
+          'ts': DateTime.now().millisecondsSinceEpoch,
+        });
+        return;
+      }
+
+      // 2. FAIL — увеличиваем счётчик
+      _consecutiveFails++;
+      await prefs.setBool('is_via_wifi', false);
+
+      FlutterForegroundTask.sendDataToMain({
+        'event': 'heartbeat_fail',
+        'fails': _consecutiveFails,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      });
+
+      debugPrint('❌ FAIL #$_consecutiveFails');
+
+      // 3. Нужно 3 подряд FAIL (90 сек) чтобы признать "ушёл"
+      if (_consecutiveFails < 3) {
+        debugPrint('⏳ Ждём подтверждения (нужно 3)');
+        return;
+      }
+
+      // 4. Уверены что ушёл — получаем GPS
+      debugPrint('🚶 УШЁЛ (3 FAIL подряд) → получаем GPS');
+
+      double? lat;
+      double? lng;
+      double? accuracy;
+
+      try {
+        final pos = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            timeLimit: Duration(seconds: 30),
+          ),
+        );
+        lat = pos.latitude;
+        lng = pos.longitude;
+        accuracy = pos.accuracy;
+      } catch (e) {
+        debugPrint('❌ GPS ошибка: $e');
+      }
+
+      // 5. Пишем в облако
       final mailruLogin = prefs.getString('mailru_login') ?? '';
       final mailruPassword = prefs.getString('mailru_password') ?? '';
+      final phoneId = prefs.getString('phone_id') ?? '';
 
-      if (phoneId.isEmpty) {
-        debugPrint('⚠️ Phone ID не задан');
-        return;
-      }
-
-      // 1. Пингуем Shome
-      final isHome = await _pingHost(shomeHost);
-      final now = DateTime.now().millisecondsSinceEpoch;
-
-      if (isHome) {
-        // Дома — обновляем timestamp
-        await prefs.setInt('last_home_ts', now);
-        debugPrint('📍 Дома — GPS не нужен');
-        return;
-      }
-
-      // 2. Пинг провалился — проверяем, сколько прошло
-      final lastHomeTs = prefs.getInt('last_home_ts') ?? 0;
-      final minutesSinceHome = lastHomeTs == 0
-          ? 999
-          : (now - lastHomeTs) ~/ 60000;
-
-      debugPrint('⏳ Нет пинга уже $minutesSinceHome мин');
-
-      if (minutesSinceHome < 3) {
-        debugPrint('⏳ Ждём (меньше 3 мин)');
-        return;
-      }
-
-      // 3. Точно ушёл — отправляем GPS
-      debugPrint('🚶 Вне дома → отправляем GPS');
-
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 60),
-      );
-
-      debugPrint('📍 GPS: ${pos.latitude}, ${pos.longitude}');
-
-      // Mail.ru
       if (mailruLogin.isNotEmpty && mailruPassword.isNotEmpty) {
-        await MailruService.connect(
+        await MailruService.ensureConnected(
           login: mailruLogin,
           password: mailruPassword,
         );
 
+        final now = DateTime.now().millisecondsSinceEpoch;
         final data = {
-          'lat': pos.latitude,
-          'lng': pos.longitude,
-          'accuracy': pos.accuracy,
-          'battery': 0,
+          'phoneId': phoneId,
+          'status': 'away',
+          'lat': lat,
+          'lng': lng,
+          'accuracy': accuracy,
+          'battery': battery,
           'ts': now,
+          'companionVersion': '1.0.0',
         };
 
         final path = 'SHome/presence/$phoneId.json';
@@ -90,29 +120,24 @@ class PresenceTaskHandler extends TaskHandler {
 
         if (success) {
           await prefs.setInt('last_gps_sent', now);
-          try {
-            final dir = await getApplicationDocumentsDirectory();
-            final file = File('${dir.path}/last_gps_sent.txt');
-            await file.writeAsString(now.toString());
-          } catch (_) {}
-          debugPrint('✅ Отправлено через Mail.ru');
+          FlutterForegroundTask.sendDataToMain({
+            'event': 'gps_sent',
+            'ts': now,
+          });
+          debugPrint('✅ Away отправлен в облако');
         }
       }
-    } catch (e) {
-      debugPrint('❌ Ошибка: $e');
+    } catch (e, st) {
+      debugPrint('❌ onRepeatEvent error: $e\n$st');
     }
   }
 
-  Future<bool> _pingHost(String host) async {
+  Future<int> _getBattery() async {
     try {
-      final result = await Process.run(
-        'ping',
-        ['-c', '1', '-W', '2', host],
-      );
-      return result.exitCode == 0;
-    } catch (e) {
-      debugPrint('❌ Ошибка ping: $e');
-      return false;
+      // TODO: подключить battery_plus
+      return 0;
+    } catch (_) {
+      return 0;
     }
   }
 
@@ -137,7 +162,6 @@ class PresenceTaskHandler extends TaskHandler {
 class ForegroundServiceManager {
   static int _intervalMs = 60000;
 
-  /// Инициализация (вызывать в main()).
   static Future<void> init({int intervalMs = 60000}) async {
     _intervalMs = intervalMs < 60000 ? 60000 : intervalMs;
 
@@ -165,7 +189,6 @@ class ForegroundServiceManager {
     debugPrint('🔧 ForegroundServiceManager.init: interval=$_intervalMs мс');
   }
 
-  /// Запуск сервиса.
   static Future<bool> start() async {
     final permission =
     await FlutterForegroundTask.checkNotificationPermission();
@@ -180,8 +203,7 @@ class ForegroundServiceManager {
 
     await FlutterForegroundTask.startService(
       notificationTitle: 'SHome-GEO активно',
-      notificationText:
-      'Отправка координат. Остановить — в приложении',
+      notificationText: 'Отправка координат. Остановить — в приложении',
       callback: startCallback,
       serviceTypes: [ForegroundServiceTypes.location],
     );
@@ -190,13 +212,11 @@ class ForegroundServiceManager {
     return true;
   }
 
-  /// Остановка сервиса.
   static Future<void> stop() async {
     await FlutterForegroundTask.stopService();
     debugPrint('⏹ Сервис остановлен');
   }
 
-  /// Перезапуск сервиса с новым интервалом.
   static Future<void> restart({required int intervalMs}) async {
     debugPrint('🔄 Перезапуск сервиса с интервалом $intervalMs мс');
     await stop();
@@ -204,7 +224,6 @@ class ForegroundServiceManager {
     await start();
   }
 
-  /// Проверка, запущен ли сервис.
   static Future<bool> isRunning() async {
     return await FlutterForegroundTask.isRunningService;
   }
